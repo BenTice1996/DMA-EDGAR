@@ -13,10 +13,9 @@ CSV_PATH = "coded_contracts_with_ids.csv"
 OUTPUT_JSON = "qa_dataset.jsonl"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/padelson/dma_corpus/main/contracts/"
 CLAUSE_COLUMNS = {
-    "arb_clause": "What is the arbitration clause?",
-    "cof_clause": "What is the choice of forum clause?",
-    "col_clause": "What is the choice of law clause?",
-    "equitable_carveout": "What is the equitable carveout clause?"
+    "arb_text": "What is the arbitration clause?",
+    "cof_text": "What is the choice of forum clause?",
+    "col_text": "What is the choice of law clause?"
 }
 
 # === LOAD CLAUSE MAPPINGS ===
