@@ -13,6 +13,7 @@ from datasets import Dataset
 TRAINING_DATA_CSV = "coded_contracts_with_ids.csv"
 MODEL_NAME = "nlpaueb/legal-bert-base-uncased"
 OUTPUT_DIR = "./legal_bert_clause_model"
+PARTIAL_OUTPUT_DIR = "./legal_bert_clause_model_partial"
 LABELS = ["none", "arbitration", "choice_of_forum", "choice_of_law", "equitable_carveout"]
 MAX_LENGTH = 512
 BATCH_SIZE = 8
@@ -122,7 +123,11 @@ y_pred = preds.predictions.argmax(axis=1)
 report = classification_report(y_true, y_pred, target_names=label_encoder.classes_)
 print(report)
 
-# === SAVE IF PASSES THRESHOLD ===
+# === ALWAYS SAVE INTERMEDIATE MODEL ===
+trainer.save_model(PARTIAL_OUTPUT_DIR)
+print(f"💾 Partial model saved at {PARTIAL_OUTPUT_DIR}")
+
+# === CHECK IF F1 THRESHOLD MET ===
 report_dict = classification_report(y_true, y_pred, target_names=label_encoder.classes_, output_dict=True)
 ok = True
 for label in ["arbitration", "choice_of_forum", "choice_of_law", "equitable_carveout"]:
@@ -133,8 +138,9 @@ for label in ["arbitration", "choice_of_forum", "choice_of_law", "equitable_carv
     else:
         print(f"✅ {label} F1: {acc:.2%}")
 
+# === SAVE FINAL MODEL IF THRESHOLD MET ===
 if ok:
-    print("✅ All clause types meet accuracy threshold. Saving model...")
+    print("✅ All clause types meet accuracy threshold. Saving final model...")
     trainer.save_model(OUTPUT_DIR)
 else:
-    print("⚠️ Model not saved — accuracy threshold not met.")
+    print("⚠️ Model not saved as final — accuracy threshold not met.")
