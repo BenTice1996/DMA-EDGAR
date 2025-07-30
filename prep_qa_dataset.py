@@ -9,7 +9,7 @@ import pandas as pd
 import unicodedata
 from tqdm import tqdm
 import time
-from bs4 import BeautifulSoup
+import difflib
 
 # === CONFIGURATION ===
 CSV_PATH = "coded_contracts_post_with_urls_deduped.csv"
@@ -32,9 +32,13 @@ os.makedirs(TXT_FOLDER, exist_ok=True)
 def normalize(text):
     text = text.lower()
     text = unicodedata.normalize("NFKD", text)
-    text = text.replace("“", '"').replace("”", '"').replace("’", "'").replace("–", "-").replace("—", "-")
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"<[^>]+>", " ", text)  # remove tags manually, but preserve structure
+    text = ''.join(ch for ch in text if unicodedata.category(ch)[0] != "C")  # remove control chars
+    text = text.replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+    text = text.replace("–", "-").replace("—", "-").replace("−", "-")
+    text = text.replace("\xa0", " ")  # non-breaking space
+    text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")  # line breaks + tabs
+    text = re.sub(r"\s+", " ", text)  # collapse whitespace
+    text = re.sub(r"<[^>]+>", " ", text)  # remove HTML tags
     return text.strip()
 
 # === URL retry function ===
@@ -91,6 +95,33 @@ def fetch_and_normalize_contract(url, contract_id, log_list):
         })
         return None
 
+# === Fuzzy match helper ===
+def fuzzy_search_best_match(clause, context, window=30):
+    # Break clause into tokens
+    clause_tokens = clause.split()
+    clause_len = len(clause_tokens)
+
+    # Early exit
+    if clause_len < 5:
+        return None, 0.0, -1
+
+    # Tokenize context for sliding window search
+    context_tokens = context.split()
+    best_score = 0.0
+    best_text = None
+    best_start = -1
+
+    for i in range(len(context_tokens) - clause_len + 1):
+        window_tokens = context_tokens[i:i + clause_len + window]
+        window_text = " ".join(window_tokens)
+        score = difflib.SequenceMatcher(None, clause, window_text).ratio()
+        if score > best_score:
+            best_score = score
+            best_text = window_text
+            best_start = context.find(best_text)
+
+    return best_text, best_score, best_start
+
 # === Load and process CSV ===
 df = pd.read_csv(CSV_PATH)
 examples = []
@@ -122,20 +153,41 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
         clause_text = str(row.get(col, "")).strip()
         if clause_text and clause_text.lower() != "nan" and clause_text not in ["", "N/A"]:
             clause = normalize(clause_text)
-            print(f"🔍 Matching clause for {col} in: {contract_id}")
-            print(f"Clause (first 80 chars): {clause[:80]}")
+            #print(f"🔍 Matching clause for {col} in: {contract_id}")
+            #print(f"Clause (first 80 chars): {clause[:80]}")
+            answer_start = context.find(clause)
+
             answer_start = context.find(clause)
 
             if answer_start == -1:
-                error_log.append({
-                    "contract_id": row["contract_id"],
-                    "error_type": "clause_not_found",
-                    "message": "Clause text not found in normalized contract",
-                    "url": url,
-                    "clause_type": col,
-                    "clause_text": clause_text[:200]
-                })
-                continue
+                # Try fuzzy match
+                best_text, score, fuzzy_start = fuzzy_search_best_match(clause, context)
+                if score >= 0.85 and fuzzy_start != -1:
+                    qa_entry = {
+                        "contract_id": row["contract_id"],
+                        "context": context,
+                        "question": question,
+                        "answers": {
+                            "text": [best_text],
+                            "answer_start": [fuzzy_start]
+                        },
+                        "id": f"{row['contract_id']}_{col}_fuzzy",
+                        "filename": contract_id,
+                        "clause_type": col,
+                        "match_type": "fuzzy"
+                    }
+                    examples.append(qa_entry)
+                    continue
+                else:
+                    error_log.append({
+                        "contract_id": row["contract_id"],
+                        "error_type": "clause_not_found",
+                        "message": f"Clause not found (fuzzy max score: {score:.2f})",
+                        "url": url,
+                        "clause_type": col,
+                        "clause_text": clause[:200]
+                    })
+                    continue
 
             qa_entry = {
                 "contract_id": row["contract_id"],
@@ -147,7 +199,8 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
                 },
                 "id": f"{row['contract_id']}_{col}",
                 "filename": contract_id,
-                "clause_type": col
+                "clause_type": col,
+                "match_type": "exact"
             }
             examples.append(qa_entry)
 
@@ -179,8 +232,8 @@ if "equitable_carveout" in df.columns:
 
         answer_text = "yes" if int(eq_flag) == 1 else "no"
 
-        print(f"🧩 Adding equitable carveout: {row['contract_id']} → {answer_text}")
-        print(f"Arb clause exists: {arb_clause[:80]}")
+        #print(f"🧩 Adding equitable carveout: {row['contract_id']} → {answer_text}")
+        #print(f"Arb clause exists: {arb_clause[:80]}")
 
         qa_entry = {
             "contract_id": row["contract_id"],
