@@ -7,11 +7,12 @@ import json
 import requests
 import pandas as pd
 import unicodedata
-from bs4 import BeautifulSoup
 from tqdm import tqdm
+import time
+from bs4 import BeautifulSoup
 
 # === CONFIGURATION ===
-CSV_PATH = "coded_contracts_with_ids.csv"
+CSV_PATH = "coded_contracts_post_with_urls_deduped.csv"
 RAW_FOLDER = "raw_contracts"
 TXT_FOLDER = "normalized_contracts"
 OUTPUT_JSON = "qa_dataset.jsonl"
@@ -32,36 +33,48 @@ def normalize(text):
     text = text.lower()
     text = unicodedata.normalize("NFKD", text)
     text = text.replace("“", '"').replace("”", '"').replace("’", "'").replace("–", "-").replace("—", "-")
-    text = re.sub(r"\s+", " ", text)  # collapse whitespace
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)  # remove tags manually, but preserve structure
     return text.strip()
 
-# === Download and convert contract to normalized .txt ===
+# === URL retry function ===
+def safe_get(url, headers, retries=3, delay=2):
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
+            return r.content.decode("utf-8", errors="replace")
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                raise e
+
+# === Download and normalize contract ===
 def fetch_and_normalize_contract(url, contract_id, log_list):
     basename = contract_id.replace("..", "__") + ".txt"
     raw_path = os.path.join(RAW_FOLDER, basename)
     txt_path = os.path.join(TXT_FOLDER, basename)
 
-    # Skip if already processed
+    # Skip if already normalized
     if os.path.exists(txt_path):
         with open(txt_path, "r", encoding="utf-8") as f:
             return f.read()
 
     try:
-        # Download
+        # Download if not already present
         if not os.path.exists(raw_path):
-            headers = {"User-Agent": "Mozilla/5.0"}
-            r = requests.get(url, headers=headers, timeout=15)
-            r.raise_for_status()
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; Ben Tice; +mailto:tice2@law.upenn.edu)"}
+            content = safe_get(url, headers)  # Only use safe_get
             with open(raw_path, "w", encoding="utf-8") as f:
-                f.write(r.text)
+                f.write(content)
 
-        # Convert HTML to plain text
-        with open(raw_path, "r", encoding="utf-8") as f:
-            soup = BeautifulSoup(f.read(), "html.parser")
-        raw_text = soup.get_text(separator=" ", strip=True)
+        # Load raw contract from disk
+        with open(raw_path, "r", encoding="utf-8", errors="replace") as f:
+            raw_text = f.read()
+
         norm_text = normalize(raw_text)
 
-        # Save normalized
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(norm_text)
 
@@ -100,12 +113,17 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
 
     context = fetch_and_normalize_contract(url, contract_id, error_log)
     if not context:
+        print(f"❌ No context for contract: {contract_id}")
         continue
+    else:
+        print(f"✅ Loaded context for: {contract_id} ({len(context)} characters)")
 
     for col, question in CLAUSE_COLUMNS.items():
         clause_text = str(row.get(col, "")).strip()
         if clause_text and clause_text.lower() != "nan" and clause_text not in ["", "N/A"]:
             clause = normalize(clause_text)
+            print(f"🔍 Matching clause for {col} in: {contract_id}")
+            print(f"Clause (first 80 chars): {clause[:80]}")
             answer_start = context.find(clause)
 
             if answer_start == -1:
@@ -132,6 +150,51 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
                 "clause_type": col
             }
             examples.append(qa_entry)
+
+# === Add equitable carveout detection QA ===
+if "equitable_carveout" in df.columns:
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing equitable carveouts"):
+        contract_id = row["filename"].replace("/", "..").replace(":", "..")
+        url = row.get("url")
+
+        if not isinstance(url, str) or not url.startswith("http"):
+            continue  # Already logged above
+
+        context = fetch_and_normalize_contract(url, contract_id, error_log)
+        if not context:
+            print(f"❌ No context for contract: {contract_id}")
+            continue
+        else:
+            print(f"✅ Loaded context for: {contract_id} ({len(context)} characters)")
+
+        # Only run if arb_text exists
+        arb_clause = str(row.get("arb_text", "")).strip()
+        if not arb_clause or arb_clause.lower() in ["nan", "n/a"]:
+            continue
+
+        # Flag should be 0 or 1
+        eq_flag = row.get("equitable_carveout")
+        if pd.isna(eq_flag):
+            continue
+
+        answer_text = "yes" if int(eq_flag) == 1 else "no"
+
+        print(f"🧩 Adding equitable carveout: {row['contract_id']} → {answer_text}")
+        print(f"Arb clause exists: {arb_clause[:80]}")
+
+        qa_entry = {
+            "contract_id": row["contract_id"],
+            "context": context,
+            "question": "Does the arbitration clause contain an equitable carveout?",
+            "answers": {
+                "text": [answer_text],
+                "answer_start": [context.find(answer_text) if answer_text in context else 0]
+            },
+            "id": f"{row['contract_id']}_equitable_carveout",
+            "filename": contract_id,
+            "clause_type": "equitable_carveout"
+        }
+        examples.append(qa_entry)
 
 # === Save QA dataset ===
 with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
