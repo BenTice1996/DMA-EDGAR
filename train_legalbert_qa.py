@@ -4,13 +4,12 @@
 import json
 import torch
 from datasets import load_dataset, Dataset
-from transformers import (
-    AutoTokenizer,
-    AutoModelForQuestionAnswering,
-    TrainingArguments,
-    Trainer,
-    default_data_collator
-)
+import transformers
+from transformers import TrainingArguments
+from transformers import AutoModelForQuestionAnswering
+from transformers import Trainer
+from transformers import default_data_collator
+from transformers import AutoTokenizer
 from sklearn.metrics import precision_score, recall_score, f1_score
 import numpy as np
 import evaluate
@@ -18,7 +17,7 @@ import evaluate
 # === CONFIG ===
 MODEL_NAME = "nlpaueb/legal-bert-base-uncased"
 DATA_PATH = "qa_dataset.jsonl"
-OUTPUT_DIR = "legalbert_qa_model"
+OUTPUT_DIR = "C:/Users/Ben Tice/PycharmProjects/M&As_EDGAR_Scrape/legalbert_qa_model"
 MAX_LENGTH = 512
 BATCH_SIZE = 4
 EPOCHS = 3
@@ -74,7 +73,7 @@ model = AutoModelForQuestionAnswering.from_pretrained(MODEL_NAME)
 # === TRAINING ===
 training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
-    evaluation_strategy="epoch",
+    eval_strategy="epoch",
     save_strategy="epoch",
     learning_rate=2e-5,
     num_train_epochs=EPOCHS,
@@ -84,7 +83,7 @@ training_args = TrainingArguments(
     logging_dir="./logs_qa",
     save_total_limit=2,
     load_best_model_at_end=True,
-    metric_for_best_model="f1",
+    metric_for_best_model="eval_loss",
     push_to_hub=False
 )
 
